@@ -95,7 +95,10 @@ async def health():  # no params needed
 @app.post("/setup")  # starts a crawl, returns session_id immediately
 async def setup(req: SetupRequest, background_tasks: BackgroundTasks):
     """Start a company crawl and create a session. In: SetupRequest. Out: {session_id, status}."""
-    crawl = hd.create_index(req.company_url, req.company_name, req.max_pages)  # kick off crawl
+    try:
+        crawl = hd.create_index(req.company_url, req.company_name, req.max_pages)  # kick off crawl
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Company research service unavailable: {e}")
     index_id = crawl["index_id"]  # extract the id hd gave us
     active_sessions[index_id] = {  # store session on the whiteboard
         "index_id": index_id,  # hd crawl job id
@@ -112,14 +115,9 @@ async def setup(req: SetupRequest, background_tasks: BackgroundTasks):
 
 async def _poll_until_ready(session_id: str) -> None:  # runs in background until crawl finishes
     """Background task that waits for HD crawl to complete and updates session status."""
-    try:
-        final = hd.wait_for_index(active_sessions[session_id]["index_id"])  # blocks until terminal
-        status = final["status"]
-    except Exception as e:
-        print(f"[error] crawl failed for {session_id}: {e}")
-        status = "failed"
+    final = hd.wait_for_index(active_sessions[session_id]["index_id"])  # blocks until terminal
     if session_id in active_sessions:  # guard against stale sessions
-        active_sessions[session_id]["index_status"] = status  # update status on whiteboard
+        active_sessions[session_id]["index_status"] = final["status"]  # update status on whiteboard
         _save_session(session_id)  # persist updated status to supabase
 
 
@@ -130,9 +128,6 @@ async def get_status(session_id: str):
         loaded = _load_session(session_id)  # try loading from supabase
         if not loaded:  # not in supabase either
             raise HTTPException(status_code=404, detail="Session not found")  # clean 404
-    cached_status = active_sessions[session_id].get("index_status", "queued")
-    if cached_status in ("failed", "cancelled"):  # no point re-polling HD after terminal failure
-        return {"status": cached_status, "ready": False}
     job = hd.poll_index(active_sessions[session_id]["index_id"])  # ask hd for current status
     return {"status": job["status"], "ready": job["status"] == "completed"}  # ready is a boolean
 
@@ -174,7 +169,7 @@ async def next_question(req: AskRequest):
     ]
     angle = random.choice(angles)
     query = f"{session['role_title']} {angle} at {session['company_name']}"  # varied search query
-    results = hd.search(query, top_k=5)  # get relevant company content
+    results = hd.search(query, top_k=5, index_id=session.get("index_id"))  # search within this session's index
     context_block = "\n\n".join(r["text"] for r in results)  # join chunks into one string
     # Pass previously asked questions so the AI avoids repeats
     prev_questions = session.get("asked_questions", [])
@@ -212,9 +207,18 @@ async def submit_answer(req: AnswerRequest):
     return grading  # {score, feedback, weak_area}
 
 
+@app.get("/memory/{session_id}")  # returns session memory for the feedback page
+async def get_memory(session_id: str):
+    """Read HD agent memory for a session. In: session_id. Out: {content}."""
+    if session_id not in active_sessions:  # validate session exists
+        loaded = _load_session(session_id)  # try loading from supabase
+        if not loaded:  # not found anywhere
+            raise HTTPException(status_code=404, detail="Session not found")  # clean 404
+    content = hd.fs_read(f"/agent/prep_pilot_{session_id}.md")  # read from hd filesystem
+    return {"content": content}  # return memory content to frontend
+
 class FeedbackRequest(BaseModel):
     turns: list[dict]  # [{role: 'ai'|'user', text: str}]
-
 
 @app.post("/feedback/{session_id}")
 async def generate_feedback(session_id: str, req: FeedbackRequest):
@@ -223,7 +227,6 @@ async def generate_feedback(session_id: str, req: FeedbackRequest):
     role_title = session.get("role_title", "the role")
     company_name = session.get("company_name", "the company")
 
-    # Pair up turns into Q&A exchanges (AI asks, user answers)
     pairs = []
     i = 0
     while i < len(req.turns):
@@ -247,14 +250,14 @@ async def generate_feedback(session_id: str, req: FeedbackRequest):
 TRANSCRIPT:
 {transcript_text[:4000]}
 
-For each Q&A pair, return a JSON array of objects with:
+For each Q&A pair return a JSON array where each object has:
 - question_number (int, 1-based)
 - question (string)
 - score (int 1-10)
-- feedback (string, 1-2 sentences)
-- weak_area (string or empty)
+- feedback (string, 2 sentences)
+- weak_area (string, or empty string if score >= 7)
 
-Return ONLY the JSON array, no markdown."""
+Return ONLY the raw JSON array, no markdown, no extra text."""
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -268,16 +271,6 @@ Return ONLY the JSON array, no markdown."""
         answers = json.loads(raw)
     return {"answers": answers}
 
-
-@app.get("/memory/{session_id}")  # returns session memory for the feedback page
-async def get_memory(session_id: str):
-    """Read HD agent memory for a session. In: session_id. Out: {content}."""
-    if session_id not in active_sessions:  # validate session exists
-        loaded = _load_session(session_id)  # try loading from supabase
-        if not loaded:  # not found anywhere
-            raise HTTPException(status_code=404, detail="Session not found")  # clean 404
-    content = hd.fs_read(f"/agent/prep_pilot_{session_id}.md")  # read from hd filesystem
-    return {"content": content}  # return memory content to frontend
 
 # ─── OPENAI HELPERS ──────────────────────────────
 
