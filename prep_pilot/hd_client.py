@@ -36,19 +36,31 @@ def wait_for_index(index_id: str) -> dict:  # blocks until crawl finishes
 
 # ─── SEARCH ──────────────────────────────────────
 
-def search(query: str, top_k: int = 5, index_id: str | None = None) -> list[dict]:  # vector search over indexed content
-    """Semantic search over indexed content. 
-    In: query, top_k, optional index_id.
+def search(query: str, top_k: int = 5, index_id: str | None = None, sources: list[str] | None = None) -> list[dict]:
+    """Semantic search over indexed content.
+    In: query, top_k, optional index_id, optional sources (["web"], ["documents"], or both).
     Out: list of result dicts."""
-    results = hd.search(query, top_k=top_k)  # run semantic search via sdk
-    return [  # convert sdk objects to plain dicts for json serialization
+    # SDK's hd.search() doesn't support index_id/sources, so hit the API directly
+    body = {"query": query, "top_k": top_k}
+    if index_id:
+        body["index_id"] = index_id  # scope search to a specific crawl index
+    if sources:
+        body["sources"] = sources  # "web" for crawled pages, "documents" for uploads
+    raw = hd._post("/v1/search", body)  # use the SDK's internal _post helper
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        items = raw.get("results") or raw.get("data") or []
+    else:
+        items = []
+    return [  # convert to plain dicts for json serialization
         {
-            "text": r.text,  # the actual content chunk
-            "source_url": r.source_url,  # where it came from
-            "score": r.score,  # relevance score
-            "page_title": r.page_title,  # page title if available
+            "text": r.get("text", ""),
+            "source_url": r.get("source_url", ""),
+            "score": r.get("score", 0),
+            "page_title": r.get("page_title"),
         }
-        for r in results  # one dict per result
+        for r in items
     ]
 
 

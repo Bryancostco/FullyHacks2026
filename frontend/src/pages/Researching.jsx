@@ -1,20 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { pollStatus } from '../api';
 
 const steps = [
-  { label: 'Company Data', icon: 'check_circle', description: 'Analyzed' },
-  { label: 'Analyzing Role', icon: 'frame_inspect', description: 'Mapping Tech Stack' },
-  { label: 'AI Persona', icon: 'face', description: 'Crafting Recruiter' },
+  { label: 'Crawling Site', icon: 'language', description: 'Scraping pages' },
+  { label: 'Analyzing Content', icon: 'frame_inspect', description: 'Chunking & embedding' },
+  { label: 'Ready', icon: 'check_circle', description: 'Interview prepared' },
 ];
 
 export default function Researching() {
   const location = useLocation();
   const navigate = useNavigate();
   const { sessionId, companyName, roleTitle } = location.state || {};
-  const [progress, setProgress] = useState(0);
+  const [progress, setProgress] = useState(5);
   const [currentStep, setCurrentStep] = useState(0);
   const [status, setStatus] = useState('queued');
+  const [error, setError] = useState(null);
+  const crawlDone = useRef(false);
 
   useEffect(() => {
     if (!sessionId) {
@@ -22,46 +24,50 @@ export default function Researching() {
       return;
     }
 
-    // Simulate progress for demo, poll backend in parallel
-    const progressTimer = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(progressTimer);
-          return 100;
-        }
-        return prev + 2;
-      });
-    }, 200);
-
-    const stepTimer = setInterval(() => {
-      setCurrentStep((prev) => Math.min(prev + 1, 2));
-    }, 4000);
-
-    // Actual polling
+    // Poll the actual backend status — this drives everything
     const pollTimer = setInterval(async () => {
       try {
         const data = await pollStatus(sessionId);
         setStatus(data.status);
+
+        if (data.status === 'running') {
+          setCurrentStep(1);
+          // Slowly increment progress while running, but cap at 85
+          setProgress((prev) => Math.min(prev + 3, 85));
+        }
+
         if (data.ready || data.status === 'completed') {
-          clearInterval(pollTimer);
-          setProgress(100);
+          crawlDone.current = true;
           setCurrentStep(2);
+          setProgress(100);
+          clearInterval(pollTimer);
+        }
+
+        if (data.status === 'failed' || data.status === 'cancelled') {
+          setError(`Crawl ${data.status}. Try a different URL.`);
+          clearInterval(pollTimer);
         }
       } catch {
-        // Backend may not be running, continue with demo mode
+        // Backend not reachable — keep polling
       }
     }, 3000);
 
+    // Small progress bump so it doesn't look frozen while queued
+    const nudgeTimer = setInterval(() => {
+      if (!crawlDone.current) {
+        setProgress((prev) => Math.min(prev + 1, 20));
+      }
+    }, 2000);
+
     return () => {
-      clearInterval(progressTimer);
-      clearInterval(stepTimer);
       clearInterval(pollTimer);
+      clearInterval(nudgeTimer);
     };
   }, [sessionId, navigate]);
 
-  // Navigate to interview when progress completes
+  // Only navigate to interview when crawl is actually done
   useEffect(() => {
-    if (progress >= 100) {
+    if (progress >= 100 && crawlDone.current) {
       const timeout = setTimeout(() => {
         navigate('/interview', {
           state: { sessionId, companyName, roleTitle },
@@ -99,7 +105,12 @@ export default function Researching() {
               Researching <span className="text-primary italic">{companyName || 'Company'}</span>...
             </h2>
             <p className="font-[Inter] text-on-surface-variant text-lg max-w-md mx-auto">
-              Gathering recent engineering benchmarks and culture signals.
+              {status === 'queued' && 'Starting website crawl...'}
+              {status === 'running' && 'Scraping and analyzing company pages...'}
+              {status === 'completed' && 'Research complete — preparing your interview!'}
+              {(status === 'failed' || status === 'cancelled') && error}
+              {!['queued', 'running', 'completed', 'failed', 'cancelled'].includes(status) &&
+                'Gathering recent engineering benchmarks and culture signals.'}
             </p>
           </div>
 
@@ -152,11 +163,25 @@ export default function Researching() {
             })}
           </div>
 
+          {/* Error with retry */}
+          {error && (
+            <div className="flex items-center justify-center gap-3 mt-4">
+              <span className="material-symbols-outlined text-error">error</span>
+              <p className="text-sm text-error">{error}</p>
+              <button
+                onClick={() => navigate('/')}
+                className="px-4 py-2 bg-primary text-on-primary rounded-full text-sm font-bold hover:opacity-90 transition-all"
+              >
+                Try Again
+              </button>
+            </div>
+          )}
+
           {/* Progress Bar */}
           <div className="w-full max-w-lg mx-auto pt-8">
             <div className="flex justify-between items-end mb-2">
               <span className="text-xs font-[Inter] text-on-surface-variant uppercase tracking-tighter">
-                System Initialization
+                {status === 'completed' ? 'Complete' : 'Crawling Website'}
               </span>
               <span className="text-2xl font-[Manrope] font-extrabold text-primary">
                 {Math.min(progress, 100)}%

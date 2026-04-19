@@ -1,4 +1,5 @@
 import os  # to read env vars
+import asyncio  # to run sync calls in a thread
 import httpx  # async http client
 from fastapi import APIRouter, HTTPException  # APIRouter so this plugs into main.py
 from pydantic import BaseModel  # request body validation
@@ -31,9 +32,17 @@ async def get_realtime_session(req: RealtimeSessionRequest):
         context_block = ""  # fallback if search fails
         if index_id and session.get("index_status") == "completed":  # only search if crawl is done
             try:
-                query = f"{role_title} interview questions {company_name} culture values engineering"  # search query
-                results = hd.search(query, top_k=5, index_id=index_id)  # sync call — hd_client is not async
-                context_block = "\n\n".join(r.get("text", "") for r in results)  # join chunks
+                query = f"{role_title} interview questions {company_name} culture values engineering"
+                # Run sync hd.search in a thread so it doesn't block the event loop
+                # Only search crawled web pages, not uploaded resumes
+                results = await asyncio.wait_for(
+                    asyncio.to_thread(hd.search, query, top_k=5, index_id=index_id, sources=["web"]),
+                    timeout=10,  # give HD 10 seconds max, then fall back to generic
+                )
+                context_block = "\n\n".join(r.get("text", "") for r in results)
+            except asyncio.TimeoutError:
+                print(f"[warn] hd search timed out for session {req.session_id}, using generic questions")
+                context_block = ""
             except Exception as e:  # hd search failed, continue without context
                 print(f"[warn] hd search failed in voice setup: {e}")
                 context_block = ""

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { getRealtimeSession } from '../api';
 
-export default function VoiceMentor({ sessionId, autoStart = false }) {
+export default function VoiceMentor({ sessionId, autoStart = false, onStatusChange, onStop }) {
   const [isActive, setIsActive] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [transcript, setTranscript] = useState('');
@@ -16,19 +16,20 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
   const audioCtxRef = useRef(null);
   const streamRef = useRef(null);
   const isActiveRef = useRef(false);
-  const hasAutoStarted = useRef(false);
 
   // Auto-start voice when mounting on Interview page with a sessionId
   useEffect(() => {
-    if (autoStart && sessionId && !hasAutoStarted.current) {
-      hasAutoStarted.current = true;
+    if (autoStart && sessionId) {
       startSession();
     }
     return () => {
-      // Cleanup on unmount (page navigation)
+      // Cleanup on unmount (page navigation) or StrictMode re-run
       if (pcRef.current) pcRef.current.close();
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
       if (audioCtxRef.current) audioCtxRef.current.close();
+      pcRef.current = null;
+      streamRef.current = null;
+      audioCtxRef.current = null;
       isActiveRef.current = false;
     };
   }, [sessionId, autoStart]);
@@ -101,9 +102,11 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
           if (serverEvent.type === 'response.audio_transcript.delta') {
             setTranscript(prev => prev + serverEvent.delta);
             setIsAiSpeaking(true);
+            onStatusChange?.({ isActive: true, isAiSpeaking: true });
           }
           if (serverEvent.type === 'response.done') {
             setIsAiSpeaking(false);
+            onStatusChange?.({ isActive: true, isAiSpeaking: false });
           }
         } catch (parseErr) {
           console.warn('Failed to parse data channel message:', parseErr);
@@ -157,6 +160,7 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       
       isActiveRef.current = true;
       setIsActive(true);
+      onStatusChange?.({ isActive: true, isAiSpeaking: false });
     } catch (err) {
       console.error('Failed to start voice session:', err);
       setError(err.message || 'Failed to connect');
@@ -169,10 +173,14 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
     if (pcRef.current) pcRef.current.close();
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     if (audioCtxRef.current) audioCtxRef.current.close();
+    pcRef.current = null;
+    streamRef.current = null;
     audioCtxRef.current = null;
     isActiveRef.current = false;
     setIsActive(false);
     setTranscript('');
+    onStatusChange?.({ isActive: false, isAiSpeaking: false });
+    onStop?.();
   };
 
   const setupVisualizer = (stream) => {
@@ -217,6 +225,48 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
     renderFrame();
   };
 
+  // Embedded mode (Interview page) — no widget chrome, parent handles layout
+  if (autoStart) {
+    return (
+      <>
+        <audio ref={audioElRef} autoPlay style={{ display: 'none' }} />
+        {error && (
+          <div className="w-full bg-error-container/30 border border-error/20 p-4 rounded-lg text-center">
+            <p className="text-sm text-error mb-3">{error}</p>
+            <button
+              onClick={startSession}
+              disabled={isConnecting}
+              className="px-6 py-2 bg-primary text-on-primary rounded-full font-bold text-sm hover:opacity-90 transition-all"
+            >
+              {isConnecting ? 'Reconnecting...' : 'Retry Connection'}
+            </button>
+          </div>
+        )}
+        {!isActive && !error && (
+          <div className="w-full text-center py-4">
+            <div className="flex items-center justify-center gap-3">
+              <span className="animate-spin h-5 w-5 border-2 border-primary border-t-transparent rounded-full"></span>
+              <span className="text-sm text-on-surface-variant font-[Manrope] font-medium">
+                Connecting to interviewer...
+              </span>
+            </div>
+          </div>
+        )}
+        {isActive && (
+          <div className="w-full space-y-4">
+            <canvas ref={canvasRef} width="400" height="150" className="w-full max-w-lg mx-auto" />
+            <div className="w-full bg-surface-container-low/80 backdrop-blur-sm p-4 rounded-lg border border-outline-variant/10 min-h-[80px]">
+              <p className="text-sm text-on-surface font-medium italic">
+                {isAiSpeaking ? transcript : 'Listening...'}
+              </p>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  // Standalone mode (Onboarding page) — full widget with start button
   return (
     <div className="relative w-full aspect-video rounded-xl overflow-hidden shadow-2xl bg-surface-container flex flex-col items-center justify-center p-6 border border-outline-variant/20">
       <audio ref={audioElRef} autoPlay style={{ display: 'none' }} />
