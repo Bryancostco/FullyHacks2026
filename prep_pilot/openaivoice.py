@@ -63,7 +63,6 @@ async def get_realtime_session(req: RealtimeSessionRequest):
                     "instructions": instructions,  # grounded system prompt
                     "voice": "alloy",  # ai voice style
                     "input_audio_transcription": {"model": "whisper-1", "language": "en"},  # transcribe user speech in English
-                    "language": "en",  # force English output
                     "turn_detection": {  # auto-detect when user stops speaking
                         "type": "server_vad",
                         "threshold": 0.8,           # higher = less sensitive to background noise
@@ -85,13 +84,15 @@ def _build_instructions(role_title: str | None, company_name: str | None, contex
             "You are Mentor, a professional technical interviewer. "
             "Conduct a mock phone screen. Ask one question at a time, wait for the answer, "
             "give brief encouraging feedback, then move to the next question. "
-            "After 5-7 questions, wrap up the call naturally."
+            "After 5-7 questions, wrap up the call naturally. "
+            "Always speak in English only."
         )
 
     base = (
         f"You are Mentor, a Technical Recruiter conducting a phone screen for a {role_title} role at {company_name}. "
         f"Your job is to assess the candidate's fit for this specific role at {company_name}.\n\n"
         "RULES:\n"
+        "- Always speak in English only.\n"
         "- Ask ONE question at a time. Wait for the full answer before responding.\n"
         "- After each answer, give 1-2 sentences of brief, encouraging feedback, then ask your next question.\n"
         "- Your questions must be grounded in the real company information below — reference actual "
