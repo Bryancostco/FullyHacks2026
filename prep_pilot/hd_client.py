@@ -1,6 +1,8 @@
 #the bridge to Human Delta , thankful for all the helper functions
 
 import os  # to read env vars
+import time
+from requests.exceptions import HTTPError
 from humandelta import HumanDelta  # official hd sdk
 
 HD_API_KEY = os.getenv("HD_API_KEY", "")  # pulled from .env at runtime
@@ -8,6 +10,22 @@ hd = HumanDelta(api_key=HD_API_KEY)  # single sdk client, reused for all calls
 
 
 # ─── INDEXES ─────────────────────────────────────
+
+def _retry(fn, retries=3, backoff=2):
+    """Retry a function with exponential backoff on 429 rate limits."""
+    for attempt in range(retries):
+        try:
+            return fn()
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 429 and attempt < retries - 1:
+                wait = backoff ** (attempt + 1)
+                print(f"[warn] HD rate limited, retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                if e.response is not None:
+                    print(f"[error] HD API {e.response.status_code}: {e.response.text}")
+                raise
+
 
 def create_index(url: str, name: str, max_pages: int = 50) -> dict:  # kicks off async crawl
     """Start a website crawl. 

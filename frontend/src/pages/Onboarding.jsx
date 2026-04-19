@@ -28,7 +28,7 @@ export default function Onboarding() {
       const fullUrl = companyUrl.startsWith('http') ? companyUrl : `https://${companyUrl}`;
       const companyName = new URL(fullUrl).hostname.replace('www.', '').split('.')[0];
 
-      const data = await setupSession(companyUrl, companyName, roleTitle);
+      const data = await setupSession(fullUrl, companyName, roleTitle);
 
       if (!data.session_id) {  // backend returned something unexpected
         throw new Error(data.detail || 'Setup failed — check that the backend is running.');

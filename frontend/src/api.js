@@ -52,6 +52,15 @@ export async function submitAnswer(sessionId, question, answer, contextUsed) {
   return res.json();
 }
 
+export async function generateFeedback(sessionId, turns) {
+  const res = await fetch(`${BASE_URL}/feedback/${sessionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ turns }),
+  });
+  return res.json();
+}
+
 export async function getMemory(sessionId) {
   const res = await fetch(`${BASE_URL}/memory/${sessionId}`);
   return res.json();

@@ -1,172 +1,141 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import VoiceMentor from '../components/VoiceMentor';
+import { generateFeedback } from '../api';
 
 export default function Interview() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { sessionId, companyName, roleTitle } = location.state || {};
+  const { sessionId, companyName, roleTitle, realtimeSession } = location.state || {};
 
-  const [muted, setMuted] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState({ isActive: false, isAiSpeaking: false });
   const [elapsed, setElapsed] = useState(0);
+  const [ending, setEnding] = useState(false);
   const timerRef = useRef(null);
+  const turnsRef = useRef([]);
+  const stopVoiceRef = useRef(null);
 
   useEffect(() => {
-    if (!sessionId) {
-      navigate('/');
-      return;
-    }
-    timerRef.current = setInterval(() => setElapsed((p) => p + 1), 1000);
+    if (!sessionId) { navigate('/'); return; }
+    timerRef.current = setInterval(() => setElapsed(p => p + 1), 1000);
     return () => clearInterval(timerRef.current);
   }, [sessionId, navigate]);
 
-  const handleEndCall = () => {
+  const handleTurnAdded = (turn) => { turnsRef.current.push(turn); };
+
+  const handleEndCall = async () => {
     clearInterval(timerRef.current);
-    navigate('/feedback', {
-      state: { sessionId, companyName, roleTitle },
-    });
+    setEnding(true);
+    let answers = null;
+    try {
+      if (turnsRef.current.length > 0) {
+        const result = await generateFeedback(sessionId, turnsRef.current);
+        answers = result.answers;
+      }
+    } catch (e) {
+      console.warn('Feedback generation failed:', e);
+    }
+    navigate('/feedback', { state: { sessionId, companyName, roleTitle, answers } });
   };
 
-  const formatTime = (seconds) => {
-    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
-    const s = (seconds % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
-  };
-
-  const waveHeights = [16, 24, 32, 40, 48, 40, 32, 24, 16, 12, 8];
-  const waveDelays = ['1.2s', '1.5s', '1.1s', '1.4s', '1.3s', '1.4s', '1.1s', '1.5s', '1.2s', '1.5s', '1.1s'];
+  const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
   return (
     <main className="min-h-[calc(100vh-144px)] flex flex-col md:flex-row max-w-7xl mx-auto px-6 py-8 gap-8">
-      {/* Left Column */}
-      <div className="flex-none w-full md:w-80 flex flex-col gap-6">
-        <section>
-          <p className="text-on-surface-variant font-[Inter] text-xs uppercase tracking-[0.2em] mb-2">
-            Current Session
-          </p>
-          <h1 className="text-3xl font-[Manrope] font-extrabold tracking-tight text-on-surface">
-            Live Interview:{' '}
-            <span className="text-primary capitalize">{companyName || 'Company'}</span>
+      {/* Left sidebar */}
+      <div className="flex-none w-full md:w-72 flex flex-col gap-5">
+        <div>
+          <p className="text-on-surface-variant text-xs uppercase tracking-widest mb-1">Current Session</p>
+          <h1 className="text-2xl font-[Manrope] font-extrabold text-on-surface">
+            Live Interview: <span className="text-primary capitalize">{companyName || 'Company'}</span>
           </h1>
-        </section>
-
-        {/* Persona Card */}
-        <div className="bg-surface-container-low rounded-xl p-6 ghost-border">
-          <div className="flex flex-col items-center text-center">
-            <div className="relative mb-4">
-              <div className="w-24 h-24 rounded-full overflow-hidden border-2 border-primary/30 p-1 bg-surface flex items-center justify-center">
-                <span className="material-symbols-outlined text-primary text-5xl">person</span>
-              </div>
-              <div className={`absolute bottom-1 right-1 w-5 h-5 border-4 border-surface-container-low rounded-full ${voiceStatus.isActive ? 'bg-primary' : 'bg-outline-variant'}`}></div>
-            </div>
-            <h2 className="text-lg font-[Manrope] font-bold text-on-surface">Technical Recruiter</h2>
-            <p className="text-sm text-on-surface-variant mb-4">AI Interviewer Persona</p>
-            <div className="w-full h-[1px] bg-outline-variant/20 mb-4"></div>
-            <p className="text-xs text-on-surface-variant leading-relaxed italic">
-              "I'll be evaluating your system design approach and architectural decision-making today."
-            </p>
-          </div>
         </div>
 
-        {/* Timer */}
-        <div className="bg-surface-container-low rounded-xl p-4 ghost-border text-center">
-          <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-1">Elapsed</p>
-          <p className="text-2xl font-[Manrope] font-bold text-primary tabular-nums">
-            {formatTime(elapsed)}
+        <div className="bg-surface-container-low rounded-xl p-5 flex flex-col items-center text-center gap-3">
+          <div className="relative">
+            <div className="w-20 h-20 rounded-full border-2 border-primary/30 bg-surface flex items-center justify-center">
+              <span className="material-symbols-outlined text-primary text-4xl">person</span>
+            </div>
+            <div className={`absolute bottom-1 right-1 w-4 h-4 rounded-full border-2 border-surface-container-low ${voiceStatus.isActive ? 'bg-primary' : 'bg-outline-variant'}`} />
+          </div>
+          <div>
+            <p className="font-bold font-[Manrope]">Technical Recruiter</p>
+            <p className="text-xs text-on-surface-variant">AI Interviewer</p>
+          </div>
+          <p className="text-xs text-on-surface-variant italic">
+            "I'll be evaluating your fit for the {roleTitle || 'role'} today."
           </p>
         </div>
 
-        {/* Pro Tip */}
-        <div className="bg-surface-container-high/40 p-4 rounded-lg ghost-border">
-          <div className="flex items-start gap-3">
+        <div className="bg-surface-container-low rounded-xl p-4 text-center">
+          <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-1">Elapsed</p>
+          <p className="text-2xl font-[Manrope] font-bold text-primary tabular-nums">{fmt(elapsed)}</p>
+        </div>
+
+        <div className="bg-surface-container-high/40 p-4 rounded-lg">
+          <div className="flex items-start gap-2">
             <span className="material-symbols-outlined text-tertiary text-lg">lightbulb</span>
-            <div>
-              <p className="text-xs font-bold text-on-surface mb-1">PRO TIP</p>
-              <p className="text-[11px] text-on-surface-variant leading-normal">
-                Speak clearly and use the STAR method for behavioral questions. The AI interviewer is grounded in real {companyName || 'company'} data.
-              </p>
-            </div>
+            <p className="text-[11px] text-on-surface-variant leading-relaxed">
+              Use the STAR method. The AI is grounded in real {companyName || 'company'} data.
+            </p>
           </div>
         </div>
       </div>
 
-      {/* Right Column — Voice Mentor is the interviewer */}
-      <div className="flex-1 flex flex-col gap-6 min-h-[500px]">
-        {/* Waveform Canvas */}
-        <div className="flex-1 bg-surface-container-low rounded-2xl relative overflow-hidden flex flex-col items-center justify-between border border-outline-variant/10 p-6">
-          <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_#69f6b8,_transparent,_transparent)]"></div>
-
-          {/* Speaking Status */}
-          <div className="relative z-10 flex justify-center">
-            <div className="glass-hud px-6 py-2 rounded-full border border-primary/40 bg-surface-container-high/80 backdrop-blur-md shadow-lg">
-              <span className="text-sm font-[Manrope] font-bold text-primary tracking-wide">
-                {!voiceStatus.isActive
-                  ? 'Connecting to interviewer...'
-                  : voiceStatus.isAiSpeaking
-                    ? 'Interviewer is speaking...'
-                    : 'Your turn — speak your answer'}
-              </span>
-            </div>
+      {/* Main voice area */}
+      <div className="flex-1 flex flex-col gap-5">
+        <div className="flex-1 bg-surface-container-low rounded-2xl border border-outline-variant/10 p-6 flex flex-col items-center justify-between min-h-[400px]">
+          {/* Status pill */}
+          <div className="px-6 py-2 rounded-full border border-primary/40 bg-surface-container-high/80 backdrop-blur-md">
+            <span className="text-sm font-[Manrope] font-bold text-primary">
+              {!voiceStatus.isActive
+                ? 'Connecting to interviewer...'
+                : voiceStatus.isAiSpeaking
+                  ? 'Interviewer is speaking...'
+                  : 'Your turn — speak your answer'}
+            </span>
           </div>
 
-          {/* Waveform */}
-          <div className="relative w-full h-32 flex items-center justify-center gap-2 px-12 z-0">
-            {waveHeights.map((h, i) => (
-              <div
-                key={i}
-                className="waveform-bar w-2"
+          {/* Waveform bars */}
+          <div className="flex items-center justify-center gap-1.5 h-16">
+            {[16, 24, 32, 40, 48, 40, 32, 24, 16, 12, 8].map((h, i) => (
+              <div key={i} className="w-2 rounded-full bg-primary"
                 style={{
-                  height: `${!voiceStatus.isAiSpeaking ? 4 : h}px`,
-                  opacity: !voiceStatus.isAiSpeaking ? 0.2 : i >= 9 ? 0.3 + (9 - i) * 0.2 : 1,
-                  animation:
-                    !voiceStatus.isAiSpeaking
-                      ? 'none'
-                      : `wave ${waveDelays[i]} ease-in-out infinite`,
+                  height: voiceStatus.isAiSpeaking ? `${h}px` : '4px',
+                  opacity: voiceStatus.isAiSpeaking ? 1 : 0.2,
+                  transition: 'height 0.15s ease',
+                  animationDelay: `${i * 0.1}s`,
                 }}
-              ></div>
+              />
             ))}
           </div>
 
-          {/* Voice Mentor — the actual interviewer */}
-          <div className="relative z-10 w-full">
+          {/* VoiceMentor */}
+          <div className="w-full">
             <VoiceMentor
               sessionId={sessionId}
+              realtimeSession={realtimeSession}
               autoStart
               onStatusChange={setVoiceStatus}
               onStop={handleEndCall}
+              onTurnAdded={handleTurnAdded}
+              stopRef={stopVoiceRef}
             />
           </div>
         </div>
 
         {/* Controls */}
-        <div className="glass-hud p-6 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-6 border border-outline-variant/20">
-          <div className="flex items-center gap-6">
-            <button
-              onClick={() => setMuted(!muted)}
-              className="flex flex-col items-center gap-2 group transition-all active:scale-95"
-            >
-              <div className={`w-16 h-16 rounded-full flex items-center justify-center border border-outline-variant/30 transition-colors ${
-                muted ? 'bg-error-container' : 'bg-surface-container-highest group-hover:bg-surface-bright'
-              }`}>
-                <span className="material-symbols-outlined text-2xl text-on-surface">
-                  {muted ? 'mic_off' : 'mic'}
-                </span>
-              </div>
-              <span className="text-[10px] font-[Inter] font-bold uppercase tracking-widest text-on-surface-variant">
-                {muted ? 'Unmute' : 'Mute'}
-              </span>
-            </button>
-          </div>
-
-          <div className="h-12 w-[1px] bg-outline-variant/20 hidden md:block"></div>
-
+        <div className="bg-surface-container-low p-5 rounded-2xl flex items-center justify-end border border-outline-variant/20">
           <button
-            onClick={handleEndCall}
-            className="flex-1 md:flex-none px-8 py-4 bg-error-container text-error rounded-xl font-[Manrope] font-bold flex items-center justify-center gap-3 transition-all hover:brightness-110 active:scale-[0.98]"
+            onClick={() => stopVoiceRef.current ? stopVoiceRef.current() : handleEndCall()}
+            disabled={ending}
+            className="px-8 py-4 bg-error-container text-error rounded-xl font-[Manrope] font-bold flex items-center gap-3 hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-60"
           >
-            <span className="material-symbols-outlined">call_end</span>
-            End Call & See Results
+            {ending ? (
+              <><span className="animate-spin h-5 w-5 border-2 border-error border-t-transparent rounded-full" />Generating Report...</>
+            ) : (
+              <><span className="material-symbols-outlined">call_end</span>End Call & See Results</>
+            )}
           </button>
         </div>
       </div>

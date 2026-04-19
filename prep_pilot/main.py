@@ -112,9 +112,14 @@ async def setup(req: SetupRequest, background_tasks: BackgroundTasks):
 
 async def _poll_until_ready(session_id: str) -> None:  # runs in background until crawl finishes
     """Background task that waits for HD crawl to complete and updates session status."""
-    final = hd.wait_for_index(active_sessions[session_id]["index_id"])  # blocks until terminal
+    try:
+        final = hd.wait_for_index(active_sessions[session_id]["index_id"])  # blocks until terminal
+        status = final["status"]
+    except Exception as e:
+        print(f"[error] crawl failed for {session_id}: {e}")
+        status = "failed"
     if session_id in active_sessions:  # guard against stale sessions
-        active_sessions[session_id]["index_status"] = final["status"]  # update status on whiteboard
+        active_sessions[session_id]["index_status"] = status  # update status on whiteboard
         _save_session(session_id)  # persist updated status to supabase
 
 
@@ -125,6 +130,9 @@ async def get_status(session_id: str):
         loaded = _load_session(session_id)  # try loading from supabase
         if not loaded:  # not in supabase either
             raise HTTPException(status_code=404, detail="Session not found")  # clean 404
+    cached_status = active_sessions[session_id].get("index_status", "queued")
+    if cached_status in ("failed", "cancelled"):  # no point re-polling HD after terminal failure
+        return {"status": cached_status, "ready": False}
     job = hd.poll_index(active_sessions[session_id]["index_id"])  # ask hd for current status
     return {"status": job["status"], "ready": job["status"] == "completed"}  # ready is a boolean
 
@@ -202,6 +210,63 @@ async def submit_answer(req: AnswerRequest):
         )
     _save_session(req.session_id)  # persist updated weak areas
     return grading  # {score, feedback, weak_area}
+
+
+class FeedbackRequest(BaseModel):
+    turns: list[dict]  # [{role: 'ai'|'user', text: str}]
+
+
+@app.post("/feedback/{session_id}")
+async def generate_feedback(session_id: str, req: FeedbackRequest):
+    """Analyze a voice interview transcript and return structured feedback."""
+    session = active_sessions.get(session_id) or _load_session(session_id) or {}
+    role_title = session.get("role_title", "the role")
+    company_name = session.get("company_name", "the company")
+
+    # Pair up turns into Q&A exchanges (AI asks, user answers)
+    pairs = []
+    i = 0
+    while i < len(req.turns):
+        if req.turns[i]["role"] == "ai":
+            question = req.turns[i]["text"]
+            answer = req.turns[i + 1]["text"] if i + 1 < len(req.turns) and req.turns[i + 1]["role"] == "user" else ""
+            if answer:
+                pairs.append({"question": question, "answer": answer})
+            i += 2
+        else:
+            i += 1
+
+    if not pairs:
+        return {"answers": []}
+
+    transcript_text = "\n".join(
+        f"Q{idx+1}: {p['question']}\nA{idx+1}: {p['answer']}" for idx, p in enumerate(pairs)
+    )
+    prompt = f"""You are evaluating a mock interview for a {role_title} role at {company_name}.
+
+TRANSCRIPT:
+{transcript_text[:4000]}
+
+For each Q&A pair, return a JSON array of objects with:
+- question_number (int, 1-based)
+- question (string)
+- score (int 1-10)
+- feedback (string, 1-2 sentences)
+- weak_area (string or empty)
+
+Return ONLY the JSON array, no markdown."""
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            OPENAI_URL,
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={"model": OPENAI_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1500, "temperature": 0.2},
+            timeout=30,
+        )
+        response.raise_for_status()
+        raw = response.json()["choices"][0]["message"]["content"].strip()
+        answers = json.loads(raw)
+    return {"answers": answers}
 
 
 @app.get("/memory/{session_id}")  # returns session memory for the feedback page
