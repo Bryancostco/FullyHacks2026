@@ -6,12 +6,14 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+  const [error, setError] = useState(null);
 
   const pcRef = useRef(null);
   const dcRef = useRef(null);
   const audioElRef = useRef(null);
   const canvasRef = useRef(null);
   const analyzerRef = useRef(null);
+  const audioCtxRef = useRef(null);
   const streamRef = useRef(null);
   const isActiveRef = useRef(false);
   const hasAutoStarted = useRef(false);
@@ -26,12 +28,14 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       // Cleanup on unmount (page navigation)
       if (pcRef.current) pcRef.current.close();
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      if (audioCtxRef.current) audioCtxRef.current.close();
       isActiveRef.current = false;
     };
   }, [sessionId, autoStart]);
 
   const startSession = async () => {
     setIsConnecting(true);
+    setError(null);
     try {
       // 1. Get ephemeral token — pass sessionId so backend grounds AI in company context
       const sessionData = await getRealtimeSession(sessionId);
@@ -46,6 +50,15 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       // 2. Create Peer Connection
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
+
+      // Monitor connection state — detect drops mid-session
+      pc.onconnectionstatechange = () => {
+        console.log('WebRTC connection state:', pc.connectionState);
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setError('Voice connection lost — try reconnecting');
+          stopSession();
+        }
+      };
 
       // 3. Set up audio playback — use the <audio> element rendered in JSX
       const audioEl = audioElRef.current;
@@ -83,13 +96,30 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       };
 
       dc.onmessage = (e) => {
-        const serverEvent = JSON.parse(e.data);
-        if (serverEvent.type === 'response.audio_transcript.delta') {
-          setTranscript(prev => prev + serverEvent.delta);
-          setIsAiSpeaking(true);
+        try {
+          const serverEvent = JSON.parse(e.data);
+          if (serverEvent.type === 'response.audio_transcript.delta') {
+            setTranscript(prev => prev + serverEvent.delta);
+            setIsAiSpeaking(true);
+          }
+          if (serverEvent.type === 'response.done') {
+            setIsAiSpeaking(false);
+          }
+        } catch (parseErr) {
+          console.warn('Failed to parse data channel message:', parseErr);
         }
-        if (serverEvent.type === 'response.done') {
-          setIsAiSpeaking(false);
+      };
+
+      dc.onerror = (e) => {
+        console.error('Data channel error:', e);
+        setError('Voice data channel error');
+      };
+
+      dc.onclose = () => {
+        console.log('Data channel closed');
+        if (isActiveRef.current) {
+          setError('Voice connection closed unexpectedly');
+          stopSession();
         }
       };
 
@@ -98,7 +128,7 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       await pc.setLocalDescription(offer);
 
       const baseUrl = 'https://api.openai.com/v1/realtime';
-      const model = 'gpt-4o-realtime-preview-2024-12-17';
+      const model = 'gpt-4o-realtime-preview';
       
       const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
         method: 'POST',
@@ -129,6 +159,7 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       setIsActive(true);
     } catch (err) {
       console.error('Failed to start voice session:', err);
+      setError(err.message || 'Failed to connect');
     } finally {
       setIsConnecting(false);
     }
@@ -137,13 +168,18 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
   const stopSession = () => {
     if (pcRef.current) pcRef.current.close();
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    if (audioCtxRef.current) audioCtxRef.current.close();
+    audioCtxRef.current = null;
     isActiveRef.current = false;
     setIsActive(false);
     setTranscript('');
   };
 
   const setupVisualizer = (stream) => {
+    // Close previous AudioContext if one exists (prevents leak)
+    if (audioCtxRef.current) audioCtxRef.current.close();
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtxRef.current = audioCtx;
     const source = audioCtx.createMediaStreamSource(stream);
     const analyzer = audioCtx.createAnalyser();
     analyzer.fftSize = 256;
@@ -195,6 +231,11 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
               Practice your pitch and answers with our AI mentor in real-time.
             </p>
           </div>
+          {error && (
+            <p className="text-sm text-error bg-error-container/30 px-4 py-2 rounded-lg max-w-xs">
+              {error}
+            </p>
+          )}
           <button
             onClick={startSession}
             disabled={isConnecting}

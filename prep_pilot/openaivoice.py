@@ -32,9 +32,10 @@ async def get_realtime_session(req: RealtimeSessionRequest):
         if index_id and session.get("index_status") == "completed":  # only search if crawl is done
             try:
                 query = f"{role_title} interview questions {company_name} culture values engineering"  # search query
-                results = await hd.search(query, top_k=5, index_id=index_id)  # search hd for company context
+                results = hd.search(query, top_k=5, index_id=index_id)  # sync call — hd_client is not async
                 context_block = "\n\n".join(r.get("text", "") for r in results)  # join chunks
-            except Exception:  # hd search failed, continue without context
+            except Exception as e:  # hd search failed, continue without context
+                print(f"[warn] hd search failed in voice setup: {e}")
                 context_block = ""
 
         instructions = _build_instructions(role_title, company_name, context_block)  # build grounded instructions
@@ -48,15 +49,16 @@ async def get_realtime_session(req: RealtimeSessionRequest):
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "gpt-4o-realtime-preview-2024-12-17",  # realtime model
+                    "model": "gpt-4o-realtime-preview",  # realtime model (latest stable)
                     "modalities": ["audio", "text"],  # support voice and text
                     "instructions": instructions,  # grounded system prompt
                     "voice": "alloy",  # ai voice style
                     "input_audio_transcription": {"model": "whisper-1"},  # transcribe user speech
                     "turn_detection": {  # auto-detect when user stops speaking
                         "type": "server_vad",
-                        "threshold": 0.5,
-                        "silence_duration_ms": 800,
+                        "threshold": 0.8,           # higher = less sensitive to background noise
+                        "prefix_padding_ms": 500,    # buffer before speech
+                        "silence_duration_ms": 1500, # wait longer before ending turn
                     },
                 },
             )
