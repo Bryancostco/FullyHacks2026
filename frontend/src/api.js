@@ -57,7 +57,22 @@ export async function getMemory(sessionId) {
   return res.json();
 }
 
-export async function gradeInterview(sessionId, conversation, roleTitle, companyName) {
+export async function getInterviews() {
+  const res = await fetch(`${BASE_URL}/interviews`);
+  return res.json();
+}
+
+export async function getInterview(interviewId) {
+  const res = await fetch(`${BASE_URL}/interviews/${interviewId}`);
+  return res.json();
+}
+
+export async function getInsights() {
+  const res = await fetch(`${BASE_URL}/insights`);
+  return res.json();
+}
+
+export async function gradeInterview(sessionId, conversation, roleTitle, companyName, durationSeconds = 0) {
   const res = await fetch(`${BASE_URL}/grade-interview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -66,6 +81,7 @@ export async function gradeInterview(sessionId, conversation, roleTitle, company
       conversation,
       role_title: roleTitle,
       company_name: companyName,
+      duration_seconds: durationSeconds,
     }),
   });
   if (!res.ok) {

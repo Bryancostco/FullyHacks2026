@@ -40,7 +40,7 @@ export default function Interview() {
     if (convo && convo.length > 0) {
       setGrading(true);
       try {
-        const results = await gradeInterview(sessionId, convo, roleTitle, companyName);
+        const results = await gradeInterview(sessionId, convo, roleTitle, companyName, elapsed);
         navigate('/feedback', {
           state: {
             sessionId,

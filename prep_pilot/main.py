@@ -205,18 +205,18 @@ async def get_memory(session_id: str):
 
 class GradeInterviewRequest(BaseModel):
     session_id: str
-    conversation: list  # [{role: "assistant"|"user", text: "..."}]
+    conversation: list
     role_title: str
     company_name: str
+    duration_seconds: int = 0
 
 
 @app.post("/grade-interview")
 async def grade_interview(req: GradeInterviewRequest):
-    """Grade a full voice interview conversation. Returns structured feedback."""
+    """Grade a full voice interview conversation, save to Supabase, return results."""
     if not req.conversation or len(req.conversation) == 0:
         return {"score": 50, "strengths": [], "weakAreas": [], "transcripts": []}
 
-    # Build a readable transcript
     transcript_text = ""
     for turn in req.conversation:
         speaker = "Interviewer" if turn["role"] == "assistant" else "Candidate"
@@ -231,13 +231,13 @@ Return ONLY valid JSON with this exact structure:
 {{
   "score": <overall score 1-100>,
   "strengths": [
-    {{"title": "<strength area>", "detail": "<specific praise with examples from the transcript>"}},
+    {{"title": "<strength area>", "detail": "<specific praise with examples from the transcript>"}}
   ],
   "weakAreas": [
-    {{"title": "<weak area>", "detail": "<specific issue>", "tip": "<actionable improvement advice>"}},
+    {{"title": "<weak area>", "detail": "<specific issue>", "tip": "<actionable improvement advice>"}}
   ],
   "transcripts": [
-    {{"question": "<interviewer question>", "answer_summary": "<brief summary of candidate answer>", "score": <1-100>, "feedback": "<1-2 sentence feedback on this specific answer>"}},
+    {{"question": "<interviewer question>", "answer_summary": "<brief summary of candidate answer>", "score": <1-100>, "feedback": "<1-2 sentence feedback on this specific answer>"}}
   ]
 }}
 
@@ -262,12 +262,110 @@ Rules:
         )
         response.raise_for_status()
         raw = response.json()["choices"][0]["message"]["content"].strip()
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
             if raw.endswith("```"):
                 raw = raw[:-3]
-        return json.loads(raw)
+        results = json.loads(raw)
+
+    # Save to Supabase
+    try:
+        db.table("interviews").insert({
+            "session_id": req.session_id,
+            "company_name": req.company_name,
+            "role_title": req.role_title,
+            "score": results.get("score", 0),
+            "strengths": results.get("strengths", []),
+            "weak_areas": results.get("weakAreas", []),
+            "transcripts": results.get("transcripts", []),
+            "conversation": req.conversation,
+            "duration_seconds": req.duration_seconds,
+        }).execute()
+    except Exception as e:
+        print(f"[warn] failed to save interview to supabase: {e}")
+
+    return results
+
+
+@app.get("/interviews")
+async def list_interviews():
+    """Return all past interviews, newest first."""
+    try:
+        r = db.table("interviews").select("*").order("created_at", desc=True).limit(50).execute()
+        return r.data or []
+    except Exception as e:
+        print(f"[warn] failed to load interviews: {e}")
+        return []
+
+
+@app.get("/interviews/{interview_id}")
+async def get_interview(interview_id: str):
+    """Return a single interview by ID."""
+    try:
+        r = db.table("interviews").select("*").eq("id", interview_id).execute()
+        if r.data:
+            return r.data[0]
+        raise HTTPException(status_code=404, detail="Interview not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/insights")
+async def get_insights():
+    """Return aggregated insights across all interviews."""
+    try:
+        r = db.table("interviews").select("*").order("created_at", desc=True).limit(50).execute()
+        interviews = r.data or []
+    except Exception as e:
+        print(f"[warn] failed to load interviews for insights: {e}")
+        interviews = []
+
+    if not interviews:
+        return {"avg_score": 0, "total_sessions": 0, "total_practice_seconds": 0, "scores": [], "skills": [], "recent": []}
+
+    scores = [i["score"] for i in interviews if i.get("score")]
+    avg_score = round(sum(scores) / len(scores)) if scores else 0
+    total_seconds = sum(i.get("duration_seconds", 0) for i in interviews)
+
+    # Aggregate strengths and weak areas across all interviews
+    strength_counts = {}
+    weak_counts = {}
+    for i in interviews:
+        for s in (i.get("strengths") or []):
+            title = s.get("title", "")
+            if title:
+                strength_counts[title] = strength_counts.get(title, 0) + 1
+        for w in (i.get("weak_areas") or []):
+            title = w.get("title", "")
+            if title:
+                weak_counts[title] = weak_counts.get(title, 0) + 1
+
+    # Build score trend (last 10)
+    score_trend = [{"score": i["score"], "date": i["created_at"], "company": i.get("company_name", "")} for i in interviews[:10] if i.get("score")]
+    score_trend.reverse()
+
+    # Recent sessions for sidebar
+    recent = [{
+        "id": i["id"],
+        "role_title": i.get("role_title", ""),
+        "company_name": i.get("company_name", ""),
+        "score": i.get("score", 0),
+        "created_at": i.get("created_at", ""),
+        "duration_seconds": i.get("duration_seconds", 0),
+    } for i in interviews[:5]]
+
+    return {
+        "avg_score": avg_score,
+        "total_sessions": len(interviews),
+        "total_practice_seconds": total_seconds,
+        "best_score": max(scores) if scores else 0,
+        "scores": score_trend,
+        "top_strengths": sorted(strength_counts.items(), key=lambda x: x[1], reverse=True)[:4],
+        "top_weak_areas": sorted(weak_counts.items(), key=lambda x: x[1], reverse=True)[:4],
+        "recent": recent,
+    }
 
 
 # ─── OPENAI HELPERS ──────────────────────────────
