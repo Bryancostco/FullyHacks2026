@@ -57,6 +57,24 @@ export async function getMemory(sessionId) {
   return res.json();
 }
 
+export async function gradeInterview(sessionId, conversation, roleTitle, companyName) {
+  const res = await fetch(`${BASE_URL}/grade-interview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      conversation,
+      role_title: roleTitle,
+      company_name: companyName,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Grading failed (${res.status}): ${err}`);
+  }
+  return res.json();
+}
+
 export async function getRealtimeSession(sessionId = null) {
   const res = await fetch(`${BASE_URL}/realtime/session`, {
     method: 'POST',
