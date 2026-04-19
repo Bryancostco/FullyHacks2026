@@ -66,6 +66,16 @@ export async function getMemory(sessionId) {
   return res.json();
 }
 
+export async function getHistory() {
+  const res = await fetch(`${BASE_URL}/history`);
+  return res.json();
+}
+
+export async function getInsights() {
+  const res = await fetch(`${BASE_URL}/insights`);
+  return res.json();
+}
+
 export async function getRealtimeSession(sessionId = null) {
   const res = await fetch(`${BASE_URL}/realtime/session`, {
     method: 'POST',

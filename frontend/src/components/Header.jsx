@@ -13,8 +13,8 @@ export default function Header({ live }) {
   return (
     <header className="w-full top-0 sticky z-50 bg-surface-container-low">
       <div className="flex items-center justify-between px-6 py-4 w-full max-w-7xl mx-auto">
-        <Link to="/" className="flex items-center gap-3">
-          <span className="material-symbols-outlined text-primary">mic_external_on</span>
+        <Link to="/" className="flex items-center gap-2">
+          <img src="/logo.png" alt="PrepPilot" className="h-24 w-24 object-contain" />
           <span className="font-[Manrope] font-bold tracking-tighter text-xl text-primary">PrepPilot</span>
         </Link>
 

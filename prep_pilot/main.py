@@ -269,7 +269,102 @@ Return ONLY the raw JSON array, no markdown, no extra text."""
         response.raise_for_status()
         raw = response.json()["choices"][0]["message"]["content"].strip()
         answers = json.loads(raw)
+
+    # Compute aggregate fields for Supabase
+    scored = [a for a in answers if a.get("score") is not None]
+    avg_score = round(sum(a["score"] for a in scored) / len(scored) * 10) if scored else 0
+    strengths = [a.get("weak_area", "") for a in answers if a.get("score", 0) >= 7 and a.get("weak_area")]
+    # use question text as strength label for high-scoring answers
+    strengths = [f"Q{a['question_number']}" for a in answers if a.get("score", 0) >= 7]
+    weak_areas = [a["weak_area"] for a in answers if a.get("score", 0) < 7 and a.get("weak_area")]
+    transcripts = answers
+
+    # Derive skill scores from per-answer scores (heuristic mapping)
+    tech_answers = [a for a in scored if a.get("question_number", 0) % 2 == 1]
+    comm_answers = [a for a in scored if a.get("question_number", 0) % 2 == 0]
+    skill_technical = round(sum(a["score"] for a in tech_answers) / len(tech_answers) * 10) if tech_answers else avg_score
+    skill_communication = round(sum(a["score"] for a in comm_answers) / len(comm_answers) * 10) if comm_answers else avg_score
+    skill_clarity = min(100, round(avg_score * 1.05))
+    skill_confidence = max(0, round(avg_score * 0.95))
+
+    duration_seconds = session.get("duration_seconds", 0)
+
+    try:
+        db.table("binterviews").insert({
+            "session_id": session_id,
+            "company_name": company_name,
+            "role_title": role_title,
+            "score": avg_score,
+            "strengths": strengths,
+            "weak_areas": weak_areas,
+            "transcripts": transcripts,
+            "conversation": req.turns,
+            "duration_seconds": duration_seconds,
+            "questions_count": len(answers),
+            "skill_technical": skill_technical,
+            "skill_communication": skill_communication,
+            "skill_clarity": skill_clarity,
+            "skill_confidence": skill_confidence,
+        }).execute()
+    except Exception as e:
+        print(f"[warn] supabase binterviews insert failed: {e}")
+
     return {"answers": answers}
+
+
+@app.get("/history")
+async def get_history():
+    """Return all completed binterviews ordered by most recent."""
+    try:
+        result = db.table("binterviews").select("*").order("created_at", desc=True).execute()
+        return {"sessions": result.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load history: {e}")
+
+
+@app.get("/insights")
+async def get_insights():
+    """Return aggregated stats across all binterviews."""
+    try:
+        result = db.table("binterviews").select("*").order("created_at", desc=True).execute()
+        rows = result.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load insights: {e}")
+
+    if not rows:
+        return {
+            "overall_score": 0,
+            "total_sessions": 0,
+            "total_practice_seconds": 0,
+            "best_score": 0,
+            "skill_technical": 0,
+            "skill_communication": 0,
+            "skill_clarity": 0,
+            "skill_confidence": 0,
+            "score_trend": [],
+            "recent_sessions": [],
+        }
+
+    scores = [r["score"] for r in rows if r.get("score") is not None]
+    overall = round(sum(scores) / len(scores)) if scores else 0
+    trend = [{"date": r["created_at"][:10], "score": r["score"]} for r in reversed(rows[-10:])]
+
+    def avg_skill(key):
+        vals = [r[key] for r in rows if r.get(key) is not None]
+        return round(sum(vals) / len(vals)) if vals else 0
+
+    return {
+        "overall_score": overall,
+        "total_sessions": len(rows),
+        "total_practice_seconds": sum(r.get("duration_seconds", 0) or 0 for r in rows),
+        "best_score": max(scores) if scores else 0,
+        "skill_technical": avg_skill("skill_technical"),
+        "skill_communication": avg_skill("skill_communication"),
+        "skill_clarity": avg_skill("skill_clarity"),
+        "skill_confidence": avg_skill("skill_confidence"),
+        "score_trend": trend,
+        "recent_sessions": rows[:5],
+    }
 
 
 # ─── OPENAI HELPERS ──────────────────────────────
