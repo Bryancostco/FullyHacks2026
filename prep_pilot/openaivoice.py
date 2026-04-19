@@ -62,7 +62,8 @@ async def get_realtime_session(req: RealtimeSessionRequest):
                     "modalities": ["audio", "text"],  # support voice and text
                     "instructions": instructions,  # grounded system prompt
                     "voice": "alloy",  # ai voice style
-                    "input_audio_transcription": {"model": "whisper-1"},  # transcribe user speech
+                    "input_audio_transcription": {"model": "whisper-1", "language": "en"},  # transcribe user speech in English
+                    "language": "en",  # force English output
                     "turn_detection": {  # auto-detect when user stops speaking
                         "type": "server_vad",
                         "threshold": 0.8,           # higher = less sensitive to background noise
