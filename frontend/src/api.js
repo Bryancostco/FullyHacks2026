@@ -57,11 +57,11 @@ export async function getMemory(sessionId) {
   return res.json();
 }
 
-export async function getRealtimeSession(sessionId) {
+export async function getRealtimeSession(sessionId = null) {
   const res = await fetch(`${BASE_URL}/realtime/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({ session_id: sessionId }),  // sends null if no session yet
   });
   return res.json();
 }

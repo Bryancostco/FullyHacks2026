@@ -10,6 +10,7 @@ export default function Onboarding() {
   const [roleTitle, setRoleTitle] = useState('');
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const fileInputRef = useRef(null);
 
   const handleDrop = (e) => {
@@ -22,27 +23,27 @@ export default function Onboarding() {
     e.preventDefault();
     if (!companyUrl || !roleTitle) return;
     setLoading(true);
+    setError('');
     try {
       const fullUrl = companyUrl.startsWith('http') ? companyUrl : `https://${companyUrl}`;
       const companyName = new URL(fullUrl).hostname.replace('www.', '').split('.')[0];
 
       const data = await setupSession(companyUrl, companyName, roleTitle);
-      const sessionId = data.session_id;
 
-      if (file && sessionId) {
-        await uploadResume(sessionId, file).catch(() => {});
+      if (!data.session_id) {  // backend returned something unexpected
+        throw new Error(data.detail || 'Setup failed — check that the backend is running.');
+      }
+
+      if (file && data.session_id) {
+        await uploadResume(data.session_id, file).catch(() => {});  // upload failure is non-fatal
       }
 
       navigate('/researching', {
-        state: { sessionId, companyName, roleTitle },
+        state: { sessionId: data.session_id, companyName, roleTitle },
       });
     } catch (err) {
       console.error('Setup failed:', err);
-      // For demo: navigate anyway with a fake session
-      const companyName = companyUrl.replace(/https?:\/\//, '').replace('www.', '').split('.')[0];
-      navigate('/researching', {
-        state: { sessionId: 'demo_session', companyName, roleTitle },
-      });
+      setError(err.message || 'Could not connect to the backend. Make sure uvicorn is running on port 8000.');
     } finally {
       setLoading(false);
     }
@@ -135,6 +136,13 @@ export default function Onboarding() {
                   </div>
                 </div>
               </div>
+
+              {error && (
+                <div className="flex items-start gap-3 p-4 bg-error-container/20 border border-error/20 rounded-lg">
+                  <span className="material-symbols-outlined text-error text-sm mt-0.5">error</span>
+                  <p className="text-error text-sm">{error}</p>
+                </div>
+              )}
 
               <button
                 type="submit"
