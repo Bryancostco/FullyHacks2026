@@ -95,7 +95,10 @@ async def health():  # no params needed
 @app.post("/setup")  # starts a crawl, returns session_id immediately
 async def setup(req: SetupRequest, background_tasks: BackgroundTasks):
     """Start a company crawl and create a session. In: SetupRequest. Out: {session_id, status}."""
-    crawl = hd.create_index(req.company_url, req.company_name, req.max_pages)  # kick off crawl
+    try:
+        crawl = hd.create_index(req.company_url, req.company_name, req.max_pages)  # kick off crawl
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Company research service unavailable: {e}")
     index_id = crawl["index_id"]  # extract the id hd gave us
     active_sessions[index_id] = {  # store session on the whiteboard
         "index_id": index_id,  # hd crawl job id
@@ -166,7 +169,7 @@ async def next_question(req: AskRequest):
     ]
     angle = random.choice(angles)
     query = f"{session['role_title']} {angle} at {session['company_name']}"  # varied search query
-    results = hd.search(query, top_k=5)  # get relevant company content
+    results = hd.search(query, top_k=5, index_id=session.get("index_id"))  # search within this session's index
     context_block = "\n\n".join(r["text"] for r in results)  # join chunks into one string
     # Pass previously asked questions so the AI avoids repeats
     prev_questions = session.get("asked_questions", [])

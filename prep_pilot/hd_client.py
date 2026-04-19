@@ -1,6 +1,8 @@
 #the bridge to Human Delta , thankful for all the helper functions
 
 import os  # to read env vars
+import time  # for retry backoff
+from requests.exceptions import HTTPError  # to catch rate limits
 from humandelta import HumanDelta  # official hd sdk
 
 HD_API_KEY = os.getenv("HD_API_KEY", "")  # pulled from .env at runtime
@@ -9,11 +11,25 @@ hd = HumanDelta(api_key=HD_API_KEY)  # single sdk client, reused for all calls
 
 # ─── INDEXES ─────────────────────────────────────
 
+def _retry(fn, retries=3, backoff=2):
+    """Retry a function with exponential backoff on 429 rate limits."""
+    for attempt in range(retries):
+        try:
+            return fn()
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 429 and attempt < retries - 1:
+                wait = backoff ** (attempt + 1)  # 2s, 4s, 8s
+                print(f"[warn] HD rate limited, retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+
+
 def create_index(url: str, name: str, max_pages: int = 50) -> dict:  # kicks off async crawl
-    """Start a website crawl. 
-    In: url, name, max_pages. 
+    """Start a website crawl.
+    In: url, name, max_pages.
     Out: {index_id, status}."""
-    job = hd.indexes.create(url, max_pages=max_pages, name=name)  # start crawl, returns immediately
+    job = _retry(lambda: hd.indexes.create(url, max_pages=max_pages, name=name))
     return {"index_id": job.id, "status": job.status}  # return id and initial status
 
 
@@ -46,7 +62,7 @@ def search(query: str, top_k: int = 5, index_id: str | None = None, sources: lis
         body["index_id"] = index_id  # scope search to a specific crawl index
     if sources:
         body["sources"] = sources  # "web" for crawled pages, "documents" for uploads
-    raw = hd._post("/v1/search", body)  # use the SDK's internal _post helper
+    raw = _retry(lambda: hd._post("/v1/search", body))  # retry on rate limits
     if isinstance(raw, list):
         items = raw
     elif isinstance(raw, dict):
