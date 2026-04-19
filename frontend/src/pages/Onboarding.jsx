@@ -1,9 +1,11 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { setupSession, uploadResume } from '../api';
+import VoiceMentor from '../components/VoiceMentor';
 
 export default function Onboarding() {
   const navigate = useNavigate();
+  // ... existing state ...
   const [companyUrl, setCompanyUrl] = useState('');
   const [roleTitle, setRoleTitle] = useState('');
   const [file, setFile] = useState(null);
@@ -65,20 +67,7 @@ export default function Onboarding() {
             </p>
           </div>
 
-          <div className="relative w-full aspect-video rounded-xl overflow-hidden shadow-2xl group">
-            <div className="w-full h-full bg-gradient-to-br from-surface-container-high to-surface-container flex items-center justify-center">
-              <span className="material-symbols-outlined text-primary/30 text-[120px]">
-                desktop_windows
-              </span>
-            </div>
-            <div className="absolute inset-0 bg-gradient-to-t from-surface via-transparent to-transparent"></div>
-            <div className="absolute bottom-6 left-6 flex items-center gap-3 glass-panel px-4 py-2 rounded-lg border border-outline-variant/20">
-              <span className="w-2 h-2 rounded-full bg-primary shadow-[0_0_8px_rgba(105,246,184,0.8)] animate-pulse"></span>
-              <span className="text-xs font-[Inter] uppercase tracking-widest text-primary">
-                System Ready
-              </span>
-            </div>
-          </div>
+          <VoiceMentor />
         </div>
 
         {/* Right: Form */}
