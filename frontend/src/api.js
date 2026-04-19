@@ -63,5 +63,9 @@ export async function getRealtimeSession(sessionId = null) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),  // sends null if no session yet
   });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Realtime session failed (${res.status}): ${err}`);
+  }
   return res.json();
 }

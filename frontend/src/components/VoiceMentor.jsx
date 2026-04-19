@@ -1,37 +1,42 @@
 import { useState, useRef, useEffect } from 'react';
 import { getRealtimeSession } from '../api';
 
-export default function VoiceMentor({ sessionId, autoStart = false }) {
+export default function VoiceMentor({ sessionId, autoStart = false, onStatusChange, onStop }) {
   const [isActive, setIsActive] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+  const [error, setError] = useState(null);
 
   const pcRef = useRef(null);
   const dcRef = useRef(null);
   const audioElRef = useRef(null);
   const canvasRef = useRef(null);
   const analyzerRef = useRef(null);
+  const audioCtxRef = useRef(null);
   const streamRef = useRef(null);
   const isActiveRef = useRef(false);
-  const hasAutoStarted = useRef(false);
 
   // Auto-start voice when mounting on Interview page with a sessionId
   useEffect(() => {
-    if (autoStart && sessionId && !hasAutoStarted.current) {
-      hasAutoStarted.current = true;
+    if (autoStart && sessionId) {
       startSession();
     }
     return () => {
-      // Cleanup on unmount (page navigation)
+      // Cleanup on unmount (page navigation) or StrictMode re-run
       if (pcRef.current) pcRef.current.close();
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      if (audioCtxRef.current) audioCtxRef.current.close();
+      pcRef.current = null;
+      streamRef.current = null;
+      audioCtxRef.current = null;
       isActiveRef.current = false;
     };
   }, [sessionId, autoStart]);
 
   const startSession = async () => {
     setIsConnecting(true);
+    setError(null);
     try {
       // 1. Get ephemeral token — pass sessionId so backend grounds AI in company context
       const sessionData = await getRealtimeSession(sessionId);
@@ -46,6 +51,15 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       // 2. Create Peer Connection
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
+
+      // Monitor connection state — detect drops mid-session
+      pc.onconnectionstatechange = () => {
+        console.log('WebRTC connection state:', pc.connectionState);
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setError('Voice connection lost — try reconnecting');
+          stopSession();
+        }
+      };
 
       // 3. Set up audio playback — use the <audio> element rendered in JSX
       const audioEl = audioElRef.current;
@@ -66,14 +80,49 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       const dc = pc.createDataChannel('oai-events');
       dcRef.current = dc;
       
+      dc.onopen = () => {
+        console.log('Data channel open — configuring VAD');
+        // Raise VAD thresholds so it doesn't cut off on background noise
+        dc.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.8,            // higher = needs louder speech to trigger (default ~0.5)
+              prefix_padding_ms: 500,     // keep 500ms of audio before speech detected
+              silence_duration_ms: 1500,  // wait 1.5s of silence before ending turn (default ~500ms)
+            },
+          },
+        }));
+      };
+
       dc.onmessage = (e) => {
-        const serverEvent = JSON.parse(e.data);
-        if (serverEvent.type === 'response.audio_transcript.delta') {
-          setTranscript(prev => prev + serverEvent.delta);
-          setIsAiSpeaking(true);
+        try {
+          const serverEvent = JSON.parse(e.data);
+          if (serverEvent.type === 'response.audio_transcript.delta') {
+            setTranscript(prev => prev + serverEvent.delta);
+            setIsAiSpeaking(true);
+            onStatusChange?.({ isActive: true, isAiSpeaking: true });
+          }
+          if (serverEvent.type === 'response.done') {
+            setIsAiSpeaking(false);
+            onStatusChange?.({ isActive: true, isAiSpeaking: false });
+          }
+        } catch (parseErr) {
+          console.warn('Failed to parse data channel message:', parseErr);
         }
-        if (serverEvent.type === 'response.done') {
-          setIsAiSpeaking(false);
+      };
+
+      dc.onerror = (e) => {
+        console.error('Data channel error:', e);
+        setError('Voice data channel error');
+      };
+
+      dc.onclose = () => {
+        console.log('Data channel closed');
+        if (isActiveRef.current) {
+          setError('Voice connection closed unexpectedly');
+          stopSession();
         }
       };
 
@@ -82,7 +131,7 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       await pc.setLocalDescription(offer);
 
       const baseUrl = 'https://api.openai.com/v1/realtime';
-      const model = 'gpt-4o-realtime-preview-2024-12-17';
+      const model = 'gpt-4o-realtime-preview';
       
       const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
         method: 'POST',
@@ -111,8 +160,10 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       
       isActiveRef.current = true;
       setIsActive(true);
+      onStatusChange?.({ isActive: true, isAiSpeaking: false });
     } catch (err) {
       console.error('Failed to start voice session:', err);
+      setError(err.message || 'Failed to connect');
     } finally {
       setIsConnecting(false);
     }
@@ -121,13 +172,22 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
   const stopSession = () => {
     if (pcRef.current) pcRef.current.close();
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    if (audioCtxRef.current) audioCtxRef.current.close();
+    pcRef.current = null;
+    streamRef.current = null;
+    audioCtxRef.current = null;
     isActiveRef.current = false;
     setIsActive(false);
     setTranscript('');
+    onStatusChange?.({ isActive: false, isAiSpeaking: false });
+    onStop?.();
   };
 
   const setupVisualizer = (stream) => {
+    // Close previous AudioContext if one exists (prevents leak)
+    if (audioCtxRef.current) audioCtxRef.current.close();
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtxRef.current = audioCtx;
     const source = audioCtx.createMediaStreamSource(stream);
     const analyzer = audioCtx.createAnalyser();
     analyzer.fftSize = 256;
@@ -165,6 +225,48 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
     renderFrame();
   };
 
+  // Embedded mode (Interview page) — no widget chrome, parent handles layout
+  if (autoStart) {
+    return (
+      <>
+        <audio ref={audioElRef} autoPlay style={{ display: 'none' }} />
+        {error && (
+          <div className="w-full bg-error-container/30 border border-error/20 p-4 rounded-lg text-center">
+            <p className="text-sm text-error mb-3">{error}</p>
+            <button
+              onClick={startSession}
+              disabled={isConnecting}
+              className="px-6 py-2 bg-primary text-on-primary rounded-full font-bold text-sm hover:opacity-90 transition-all"
+            >
+              {isConnecting ? 'Reconnecting...' : 'Retry Connection'}
+            </button>
+          </div>
+        )}
+        {!isActive && !error && (
+          <div className="w-full text-center py-4">
+            <div className="flex items-center justify-center gap-3">
+              <span className="animate-spin h-5 w-5 border-2 border-primary border-t-transparent rounded-full"></span>
+              <span className="text-sm text-on-surface-variant font-[Manrope] font-medium">
+                Connecting to interviewer...
+              </span>
+            </div>
+          </div>
+        )}
+        {isActive && (
+          <div className="w-full space-y-4">
+            <canvas ref={canvasRef} width="400" height="150" className="w-full max-w-lg mx-auto" />
+            <div className="w-full bg-surface-container-low/80 backdrop-blur-sm p-4 rounded-lg border border-outline-variant/10 min-h-[80px]">
+              <p className="text-sm text-on-surface font-medium italic">
+                {isAiSpeaking ? transcript : 'Listening...'}
+              </p>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  // Standalone mode (Onboarding page) — full widget with start button
   return (
     <div className="relative w-full aspect-video rounded-xl overflow-hidden shadow-2xl bg-surface-container flex flex-col items-center justify-center p-6 border border-outline-variant/20">
       <audio ref={audioElRef} autoPlay style={{ display: 'none' }} />
@@ -179,6 +281,11 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
               Practice your pitch and answers with our AI mentor in real-time.
             </p>
           </div>
+          {error && (
+            <p className="text-sm text-error bg-error-container/30 px-4 py-2 rounded-lg max-w-xs">
+              {error}
+            </p>
+          )}
           <button
             onClick={startSession}
             disabled={isConnecting}
