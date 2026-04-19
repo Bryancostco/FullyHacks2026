@@ -1,0 +1,17 @@
+# Environment / secrets
+.env
+.env.local
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db

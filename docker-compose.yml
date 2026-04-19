@@ -1,0 +1,8 @@
+services:
+  preppilot:
+    build: .
+    ports:
+      - "8000:8000"   # backend API
+      - "3000:3000"   # frontend
+    env_file:
+      - prep_pilot/.env
