@@ -23,9 +23,8 @@ export default function Onboarding() {
     if (!companyUrl || !roleTitle) return;
     setLoading(true);
     try {
-      const companyName = new URL(
-        companyUrl.startsWith('http') ? companyUrl : `https://${companyUrl}`
-      ).hostname.replace('www.', '').split('.')[0];
+      const fullUrl = companyUrl.startsWith('http') ? companyUrl : `https://${companyUrl}`;
+      const companyName = new URL(fullUrl).hostname.replace('www.', '').split('.')[0];
 
       const data = await setupSession(companyUrl, companyName, roleTitle);
       const sessionId = data.session_id;

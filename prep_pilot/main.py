@@ -1,16 +1,19 @@
 import os  # to read env vars
+import json  # to parse openai json responses
+import httpx  # async http client for openai calls
 from dotenv import load_dotenv  # loads .env into os.getenv
 
-load_dotenv()  # sets up enviorment variables
+load_dotenv()  # sets up environment variables, must run first
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File  # core fastapi
 from fastapi.middleware.cors import CORSMiddleware  # lets frontend call backend
 from pydantic import BaseModel  # validates json requests
 from supabase import create_client  # supabase sdk
 import tempfile  # for saving uploaded files temporarily
-import hd_client as hd  # your hd wrapper
+import hd_client as hd  # hd wrapper
+from openaivoice import router as voice_router  # realtime voice routes
 
-# app setup
+# ─── APP SETUP ───────────────────────────────────
 
 app = FastAPI(title="PrepPilot API")  # create the app
 
@@ -22,11 +25,19 @@ app.add_middleware(
     allow_headers=["*"],  # allow all headers
 )
 
-# supabase login 
+app.include_router(voice_router)  # registers /realtime/session from openaivoice.py
+
+# ─── SUPABASE ────────────────────────────────────
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")  # pulled from .env
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")  # pulled from .env
 db = create_client(SUPABASE_URL, SUPABASE_KEY)  # single supabase client, reused for all calls
+
+# ─── OPENAI CONFIG ───────────────────────────────
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")  # pulled from .env
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"  # openai chat endpoint
+OPENAI_MODEL = "gpt-4o-mini"  # cheap and fast for hackathon
 
 # ─── REQUEST MODELS ──────────────────────────────
 
@@ -45,21 +56,26 @@ class AnswerRequest(BaseModel):  # body for POST /quiz/answer
     answer: str  # required
     context_used: str = ""  # context that backed the question
 
-#stores 
+# ─── SESSION STORAGE ─────────────────────────────
 
 active_sessions: dict[str, dict] = {}  # session_id → session data, resets on server restart
 
-# ─── HELPER: save session to supabase ────────────
+# ─── SUPABASE HELPERS ────────────────────────────
 
 def _save_session(session_id: str) -> None:  # writes session dict to supabase
-    # TODO: upsert active_sessions[session_id] into the "sessions" table
-    # use db.table("sessions").upsert({"id": session_id, ...active_sessions[session_id]}).execute()
-    pass
+    """Upsert current session state to supabase. In: session_id. Out: None."""
+    db.table("sessions").upsert(  # upsert = insert or update
+        {"id": session_id, **active_sessions[session_id]}  # spread session dict into the row
+    ).execute()  # actually run the query
+
 
 def _load_session(session_id: str) -> dict | None:  # reads session from supabase
-    # TODO: query db.table("sessions").select("*").eq("id", session_id).execute()
-    # if data exists return data[0], else return None
-    pass
+    """Load a session from supabase into active_sessions. In: session_id. Out: session dict or None."""
+    result = db.table("sessions").select("*").eq("id", session_id).execute()  # query by id
+    if result.data:  # if a row was found
+        active_sessions[session_id] = result.data[0]  # load it into the whiteboard
+        return result.data[0]  # return the session dict
+    return None  # session not found
 
 # ─── ROUTES ──────────────────────────────────────
 
@@ -70,85 +86,153 @@ async def health():  # no params needed
 
 @app.post("/setup")  # starts a crawl, returns session_id immediately
 async def setup(req: SetupRequest, background_tasks: BackgroundTasks):
-    # TODO 1: call hd.create_index(req.company_url, req.company_name, req.max_pages)
-    # TODO 2: extract index_id from the response dict
-    # TODO 3: build a session dict and store in active_sessions[index_id]
-    #         session = { "index_id": index_id, "role_title": req.role_title,
-    #                     "company_name": req.company_name, "index_status": "queued",
-    #                     "q_count": 0, "weak_areas": [] }
-    # TODO 4: call _save_session(index_id) to persist to supabase
-    # TODO 5: add background task → background_tasks.add_task(_poll_until_ready, index_id)
-    # TODO 6: return {"session_id": index_id, "status": "queued"}
-    pass
+    """Start a company crawl and create a session. In: SetupRequest. Out: {session_id, status}."""
+    crawl = hd.create_index(req.company_url, req.company_name, req.max_pages)  # kick off crawl
+    index_id = crawl["index_id"]  # extract the id hd gave us
+    active_sessions[index_id] = {  # store session on the whiteboard
+        "index_id": index_id,  # hd crawl job id
+        "role_title": req.role_title,  # job they're prepping for
+        "company_name": req.company_name,  # company they're prepping for
+        "index_status": "queued",  # crawl just started
+        "q_count": 0,  # no questions asked yet
+        "weak_areas": [],  # no weak areas yet
+    }
+    _save_session(index_id)  # persist to supabase
+    background_tasks.add_task(_poll_until_ready, index_id)  # poll in background, don't block
+    return {"session_id": index_id, "status": "queued"}  # return immediately
 
 
 async def _poll_until_ready(session_id: str) -> None:  # runs in background until crawl finishes
-    # TODO 1: call hd.wait_for_index(active_sessions[session_id]["index_id"])
-    # TODO 2: update active_sessions[session_id]["index_status"] to the final status
-    # TODO 3: call _save_session(session_id) to persist the update
-    pass
+    """Background task that waits for HD crawl to complete and updates session status."""
+    final = hd.wait_for_index(active_sessions[session_id]["index_id"])  # blocks until terminal
+    if session_id in active_sessions:  # guard against stale sessions
+        active_sessions[session_id]["index_status"] = final["status"]  # update status on whiteboard
+        _save_session(session_id)  # persist updated status to supabase
 
 
 @app.get("/status/{session_id}")  # frontend polls this every 3s
 async def get_status(session_id: str):
-    # TODO 1: check if session_id is in active_sessions, if not raise HTTPException(404)
-    # TODO 2: call hd.poll_index(active_sessions[session_id]["index_id"])
-    # TODO 3: return { "status": job["status"], "ready": job["status"] == "completed" }
-    pass
+    """Return current crawl status. In: session_id path param. Out: {status, ready}."""
+    if session_id not in active_sessions:  # session not on whiteboard
+        loaded = _load_session(session_id)  # try loading from supabase
+        if not loaded:  # not in supabase either
+            raise HTTPException(status_code=404, detail="Session not found")  # clean 404
+    job = hd.poll_index(active_sessions[session_id]["index_id"])  # ask hd for current status
+    return {"status": job["status"], "ready": job["status"] == "completed"}  # ready is a boolean
 
 
 @app.post("/upload/{session_id}")  # accepts resume or JD file upload
 async def upload_file(session_id: str, category: str = "resume", file: UploadFile = File(...)):
-    # TODO 1: check session_id exists in active_sessions, raise 404 if not
-    # TODO 2: save the uploaded file to a temp path using tempfile.NamedTemporaryFile
-    # TODO 3: call hd.upload_document(temp_path, category=category)
-    # TODO 4: return {"success": True, "doc_id": result["doc_id"]}
-    pass
+    """Upload a file to HD document library. In: session_id, category, file. Out: {success, doc_id}."""
+    if session_id not in active_sessions:  # validate session exists
+        raise HTTPException(status_code=404, detail="Session not found")  # clean 404
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}") as tmp:  # save to disk temporarily
+        tmp.write(await file.read())  # write uploaded bytes to temp file
+        tmp_path = tmp.name  # grab the temp file path
+    result = hd.upload_document(tmp_path, category=category)  # upload to hd
+    return {"success": True, "doc_id": result["doc_id"]}  # return doc reference
 
 
 @app.post("/quiz/next")  # generates an interview question grounded in company content
 async def next_question(req: AskRequest):
-    # TODO 1: check session exists, raise 404 if not
-    # TODO 2: check index_status == "completed", if not return {"ready": False, "message": "Still indexing"}
-    # TODO 3: build a search query using role_title and q_count
-    # TODO 4: call hd.search(query, top_k=5) to get relevant context
-    # TODO 5: join result texts into a context_block string
-    # TODO 6: call _generate_question(role_title, context_block, q_count) → returns question string
-    # TODO 7: increment active_sessions[session_id]["q_count"]
-    # TODO 8: call _save_session to persist
-    # TODO 9: return {"question": question, "question_number": q_count, "context_used": context_block}
-    pass
+    """Generate the next interview question. In: AskRequest. Out: {question, question_number, context_used}."""
+    session = active_sessions.get(req.session_id)  # pull from whiteboard
+    if not session:  # not on whiteboard, try supabase
+        session = _load_session(req.session_id)  # try loading from supabase
+    if not session:  # not found anywhere
+        raise HTTPException(status_code=404, detail="Session not found")  # clean 404
+    if session["index_status"] != "completed":  # crawl not done yet
+        return {"ready": False, "message": "Still indexing, poll /status"}  # tell frontend to wait
+    query = f"{session['role_title']} interview question about {session['company_name']}"  # build search query
+    results = hd.search(query, top_k=5)  # get relevant company content
+    context_block = "\n\n".join(r["text"] for r in results)  # join chunks into one string
+    question = await _generate_question(session["role_title"], context_block, session["q_count"])  # generate via openai
+    active_sessions[req.session_id]["q_count"] += 1  # increment question counter
+    _save_session(req.session_id)  # persist updated count
+    return {  # return question and metadata
+        "question": question,  # the generated question
+        "question_number": session["q_count"],  # which question this is
+        "context_used": context_block,  # context chunks used to generate it
+    }
 
 
 @app.post("/quiz/answer")  # grades answer and writes weak areas to memory
 async def submit_answer(req: AnswerRequest):
-    # TODO 1: check session exists, raise 404 if not
-    # TODO 2: call _grade_answer(req.question, req.answer, req.context_used) → returns {score, feedback, weak_area}
-    # TODO 3: if score < 7 and weak_area exists, append to active_sessions[session_id]["weak_areas"]
-    # TODO 4: call hd.fs_write_memory(f"/agent/prep_pilot_{req.session_id}.md", weak areas as string)
-    # TODO 5: call _save_session to persist
-    # TODO 6: return {score, feedback, weak_area}
-    pass
+    """Grade an answer and write weak areas to HD memory. In: AnswerRequest. Out: {score, feedback, weak_area}."""
+    session = active_sessions.get(req.session_id)  # pull from whiteboard
+    if not session:  # not on whiteboard, try supabase
+        session = _load_session(req.session_id)  # try loading from supabase
+    if not session:  # not found anywhere
+        raise HTTPException(status_code=404, detail="Session not found")  # clean 404
+    grading = await _grade_answer(req.question, req.answer, req.context_used)  # grade via openai
+    if grading["score"] < 7 and grading["weak_area"]:  # below passing and has a topic
+        active_sessions[req.session_id]["weak_areas"].append(grading["weak_area"])  # track weak area
+        weak_areas_text = "\n".join(f"- {w}" for w in active_sessions[req.session_id]["weak_areas"])  # format as list
+        hd.fs_write_memory(  # write to hd agent memory
+            f"/agent/prep_pilot_{req.session_id}.md",  # unique path per session
+            f"# Weak Areas for {session['role_title']}\n\n{weak_areas_text}",  # markdown content
+        )
+    _save_session(req.session_id)  # persist updated weak areas
+    return grading  # {score, feedback, weak_area}
 
 
 @app.get("/memory/{session_id}")  # returns session memory for the feedback page
 async def get_memory(session_id: str):
-    # TODO 1: check session exists, raise 404 if not
-    # TODO 2: call hd.fs_read(f"/agent/prep_pilot_{session_id}.md")
-    # TODO 3: return {"content": content}
-    pass
-
+    """Read HD agent memory for a session. In: session_id. Out: {content}."""
+    if session_id not in active_sessions:  # validate session exists
+        loaded = _load_session(session_id)  # try loading from supabase
+        if not loaded:  # not found anywhere
+            raise HTTPException(status_code=404, detail="Session not found")  # clean 404
+    content = hd.fs_read(f"/agent/prep_pilot_{session_id}.md")  # read from hd filesystem
+    return {"content": content}  # return memory content to frontend
 
 # ─── OPENAI HELPERS ──────────────────────────────
 
 async def _generate_question(role_title: str, context: str, q_number: int) -> str:  # calls openai to write a question
-    # TODO: build a prompt, POST to openai chat completions, return the question string
-    # see HANDOFF.md step 5 for the prompt template
-    pass
+    """Generate one interview question grounded in context. In: role, context, q_number. Out: question string."""
+    prompt = f"""You are an interviewer for a {role_title} role.
+Based on this real company content, write ONE interview question.
+
+CONTEXT:
+{context[:2000]}
+
+Return only the question. No preamble."""  # tight prompt, no fluff
+    async with httpx.AsyncClient() as client:  # one-shot async http session
+        response = await client.post(
+            OPENAI_URL,  # openai chat completions endpoint
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},  # auth
+            json={
+                "model": OPENAI_MODEL,  # gpt-4o-mini
+                "messages": [{"role": "user", "content": prompt}],  # single user message
+                "max_tokens": 200,  # questions are short
+                "temperature": 0.7,  # some creativity
+            },
+        )
+        response.raise_for_status()  # crash on 4xx/5xx
+        return response.json()["choices"][0]["message"]["content"].strip()  # extract question text
 
 
 async def _grade_answer(question: str, answer: str, context: str) -> dict:  # calls openai to grade an answer
-    # TODO: build a grading prompt, POST to openai, parse JSON response
-    # return {"score": int, "feedback": str, "weak_area": str}
-    # see HANDOFF.md step 5 for the prompt template
-    pass
+    """Grade an interview answer 1-10. In: question, answer, context. Out: {score, feedback, weak_area}."""
+    prompt = f"""Grade this interview answer 1-10 based on the reference context.
+
+QUESTION: {question}
+ANSWER: {answer}
+CONTEXT: {context[:1500]}
+
+Return ONLY JSON:
+{{"score": <int>, "feedback": "<2-3 sentences>", "weak_area": "<topic or empty string>"}}"""
+    async with httpx.AsyncClient() as client:  # one-shot async http session
+        response = await client.post(
+            OPENAI_URL,  # openai chat completions endpoint
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},  # auth
+            json={
+                "model": OPENAI_MODEL,  # gpt-4o-mini
+                "messages": [{"role": "user", "content": prompt}],  # single user message
+                "max_tokens": 300,  # feedback needs a bit more space
+                "temperature": 0.2,  # low temp for consistent json output
+            },
+        )
+        response.raise_for_status()  # crash on 4xx/5xx
+        raw = response.json()["choices"][0]["message"]["content"].strip()  # extract response text
+        return json.loads(raw)  # parse json string into dict
