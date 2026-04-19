@@ -12,6 +12,7 @@ from supabase import create_client  # supabase sdk
 import tempfile  # for saving uploaded files temporarily
 import hd_client as hd  # hd wrapper
 from openaivoice import router as voice_router  # realtime voice routes
+from session_store import active_sessions  # shared session state
 
 # ─── APP SETUP ───────────────────────────────────
 
@@ -58,23 +59,29 @@ class AnswerRequest(BaseModel):  # body for POST /quiz/answer
 
 # ─── SESSION STORAGE ─────────────────────────────
 
-active_sessions: dict[str, dict] = {}  # session_id → session data, resets on server restart
+# active_sessions is imported from session_store.py (shared with openaivoice.py)
 
 # ─── SUPABASE HELPERS ────────────────────────────
 
 def _save_session(session_id: str) -> None:  # writes session dict to supabase
     """Upsert current session state to supabase. In: session_id. Out: None."""
-    db.table("sessions").upsert(  # upsert = insert or update
-        {"id": session_id, **active_sessions[session_id]}  # spread session dict into the row
-    ).execute()  # actually run the query
+    try:
+        db.table("sessions").upsert(  # upsert = insert or update
+            {"id": session_id, **active_sessions[session_id]}  # spread session dict into the row
+        ).execute()  # actually run the query
+    except Exception as e:  # supabase not configured or network error — don't crash the route
+        print(f"[warn] supabase save failed for {session_id}: {e}")  # log but continue
 
 
 def _load_session(session_id: str) -> dict | None:  # reads session from supabase
     """Load a session from supabase into active_sessions. In: session_id. Out: session dict or None."""
-    result = db.table("sessions").select("*").eq("id", session_id).execute()  # query by id
-    if result.data:  # if a row was found
-        active_sessions[session_id] = result.data[0]  # load it into the whiteboard
-        return result.data[0]  # return the session dict
+    try:
+        result = db.table("sessions").select("*").eq("id", session_id).execute()  # query by id
+        if result.data:  # if a row was found
+            active_sessions[session_id] = result.data[0]  # load it into the whiteboard
+            return result.data[0]  # return the session dict
+    except Exception as e:  # supabase not configured or network error
+        print(f"[warn] supabase load failed for {session_id}: {e}")  # log but continue
     return None  # session not found
 
 # ─── ROUTES ──────────────────────────────────────

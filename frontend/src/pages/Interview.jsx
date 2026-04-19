@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { getNextQuestion, submitAnswer } from '../api';
+import VoiceMentor from '../components/VoiceMentor';
 
 export default function Interview() {
   const location = useLocation();
@@ -178,6 +179,9 @@ export default function Interview() {
             </div>
           </div>
         </div>
+
+        {/* Voice Mentor — grounded in company context via sessionId */}
+        <VoiceMentor sessionId={sessionId} autoStart />
       </div>
 
       {/* Right Column */}
