@@ -1,5 +1,6 @@
 import os  # to read env vars
 import json  # to parse openai json responses
+import random  # for randomizing question topics
 import httpx  # async http client for openai calls
 from dotenv import load_dotenv  # loads .env into os.getenv
 
@@ -150,10 +151,30 @@ async def next_question(req: AskRequest):
         raise HTTPException(status_code=404, detail="Session not found")  # clean 404
     if session["index_status"] != "completed":  # crawl not done yet
         return {"ready": False, "message": "Still indexing, poll /status"}  # tell frontend to wait
-    query = f"{session['role_title']} interview question about {session['company_name']}"  # build search query
+    # Randomize the search angle so we get different context each time
+    angles = [
+        "engineering culture and team structure",
+        "technical challenges and infrastructure",
+        "product strategy and roadmap",
+        "company values and mission",
+        "recent projects and initiatives",
+        "hiring process and expectations",
+        "leadership and management style",
+        "tools and technologies used",
+        "growth and career development",
+        "collaboration and cross-functional work",
+    ]
+    angle = random.choice(angles)
+    query = f"{session['role_title']} {angle} at {session['company_name']}"  # varied search query
     results = hd.search(query, top_k=5)  # get relevant company content
     context_block = "\n\n".join(r["text"] for r in results)  # join chunks into one string
-    question = await _generate_question(session["role_title"], context_block, session["q_count"])  # generate via openai
+    # Pass previously asked questions so the AI avoids repeats
+    prev_questions = session.get("asked_questions", [])
+    question = await _generate_question(session["role_title"], context_block, session["q_count"], prev_questions)
+    # Track asked questions
+    if "asked_questions" not in active_sessions[req.session_id]:
+        active_sessions[req.session_id]["asked_questions"] = []
+    active_sessions[req.session_id]["asked_questions"].append(question)
     active_sessions[req.session_id]["q_count"] += 1  # increment question counter
     _save_session(req.session_id)  # persist updated count
     return {  # return question and metadata
@@ -195,28 +216,34 @@ async def get_memory(session_id: str):
 
 # ─── OPENAI HELPERS ──────────────────────────────
 
-async def _generate_question(role_title: str, context: str, q_number: int) -> str:  # calls openai to write a question
-    """Generate one interview question grounded in context. In: role, context, q_number. Out: question string."""
-    prompt = f"""You are an interviewer for a {role_title} role.
-Based on this real company content, write ONE interview question.
+async def _generate_question(role_title: str, context: str, q_number: int, prev_questions: list = None) -> str:
+    """Generate one interview question grounded in context. In: role, context, q_number, prev_questions. Out: question string."""
+    avoid_block = ""
+    if prev_questions:
+        avoid_list = "\n".join(f"- {q}" for q in prev_questions)
+        avoid_block = f"\n\nDO NOT repeat or rephrase any of these previously asked questions:\n{avoid_list}\n"
 
+    prompt = f"""You are an interviewer for a {role_title} role.
+Based on this real company content, write ONE creative and unique interview question.
+Ask about a different topic or angle than typical questions. Mix behavioral, technical, and situational questions.
+{avoid_block}
 CONTEXT:
 {context[:2000]}
 
-Return only the question. No preamble."""  # tight prompt, no fluff
-    async with httpx.AsyncClient() as client:  # one-shot async http session
+Return only the question. No preamble."""
+    async with httpx.AsyncClient() as client:
         response = await client.post(
-            OPENAI_URL,  # openai chat completions endpoint
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},  # auth
+            OPENAI_URL,
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": OPENAI_MODEL,  # gpt-4o-mini
-                "messages": [{"role": "user", "content": prompt}],  # single user message
-                "max_tokens": 200,  # questions are short
-                "temperature": 0.7,  # some creativity
+                "model": OPENAI_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 200,
+                "temperature": 1.0,  # higher temp for more variety
             },
         )
-        response.raise_for_status()  # crash on 4xx/5xx
-        return response.json()["choices"][0]["message"]["content"].strip()  # extract question text
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"].strip()
 
 
 async def _grade_answer(question: str, answer: str, context: str) -> dict:  # calls openai to grade an answer

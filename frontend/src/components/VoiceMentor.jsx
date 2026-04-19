@@ -66,6 +66,22 @@ export default function VoiceMentor({ sessionId, autoStart = false }) {
       const dc = pc.createDataChannel('oai-events');
       dcRef.current = dc;
       
+      dc.onopen = () => {
+        console.log('Data channel open — configuring VAD');
+        // Raise VAD thresholds so it doesn't cut off on background noise
+        dc.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.8,            // higher = needs louder speech to trigger (default ~0.5)
+              prefix_padding_ms: 500,     // keep 500ms of audio before speech detected
+              silence_duration_ms: 1500,  // wait 1.5s of silence before ending turn (default ~500ms)
+            },
+          },
+        }));
+      };
+
       dc.onmessage = (e) => {
         const serverEvent = JSON.parse(e.data);
         if (serverEvent.type === 'response.audio_transcript.delta') {
